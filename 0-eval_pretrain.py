@@ -12,16 +12,23 @@ warnings.filterwarnings('ignore')
 
 
 def count_parameters(model):
+    """ 计算模型的参数
+    :params model: 模型
+    """
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 def init_model(lm_config):
-    tokenizer = AutoTokenizer.from_pretrained('./model/minimind_tokenizer')
-    model_from = 1  # 1从权重，2用transformers
+    """ 初始化模型和tokenizer
+    :params lm_config: 模型配置
+    """
+    tokenizer = AutoTokenizer.from_pretrained('model/minimind_tokenizer_6400')
+    model_from = 1  # 1加载本地模型，2用transformers的预训练模型
 
     if model_from == 1:
         moe_path = '_moe' if lm_config.use_moe else ''
-        ckp = f'./out/pretrain_{lm_config.dim}{moe_path}.pth'
+        # ckp = f'./out/pretrain_{lm_config.dim}{moe_path}.pth'  # 预训练模型路径
+        ckp = f'./out/full_sft_{lm_config.dim}{moe_path}.pth'  # 预训练模型路径
 
         model = Transformer(lm_config)
         state_dict = torch.load(ckp, map_location=device)
@@ -47,20 +54,20 @@ def init_model(lm_config):
 
 
 def setup_seed(seed):
-    random.seed(seed)  # 设置 Python 的随机种子
-    np.random.seed(seed)  # 设置 NumPy 的随机种子
-    torch.manual_seed(seed)  # 设置 PyTorch 的随机种子
-    torch.cuda.manual_seed(seed)  # 为当前 GPU 设置随机种子（如果有）
-    torch.cuda.manual_seed_all(seed)  # 为所有 GPU 设置随机种子（如果有）
+    random.seed(seed)                      # 设置 Python 的随机种子
+    np.random.seed(seed)                   # 设置 NumPy 的随机种子
+    torch.manual_seed(seed)                # 设置 PyTorch 的随机种子
+    torch.cuda.manual_seed(seed)           # 为当前 GPU 设置随机种子（如果有）
+    torch.cuda.manual_seed_all(seed)       # 为所有 GPU 设置随机种子（如果有）
     torch.backends.cudnn.deterministic = True  # 确保每次返回的卷积算法是确定的
-    torch.backends.cudnn.benchmark = False  # 关闭 cuDNN 的自动调优，避免不确定性
+    torch.backends.cudnn.benchmark = False     # 关闭 cuDNN 的自动调优，避免不确定性
 
 
 if __name__ == "__main__":
     # -----------------------------------------------------------------------------
     out_dir = 'out'
     start = ""
-    temperature = 0.7
+    temperature = 0.3
     top_k = 8
     setup_seed(1337)
     # device = 'cpu'
