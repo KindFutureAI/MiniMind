@@ -18,21 +18,31 @@ class RMSNorm(torch.nn.Module):
       - RMSNorm 是一种归一化方法，类似于 LayerNorm，但计算方式不同。
       - 它通过对输入的平方根均值进行归一化，使得输入的均值为 0，方差为 1。
     """
+
     def __init__(self, dim: int, eps: float):
-        """ 初始化 RMSNorm 类
-        :param: dim: 输入的维度
-        :param: eps: 防止除零错误的 epsilon 值, TODO 是一个很小的值
+        """
+        :param dim: 输入的维度
+        :param eps: 防止除零错误的 epsilon 值, 是一个很小的值
         """
         super().__init__()
         self.eps = eps  # 设置 epsilon，防止除零错误
-        self.weight = nn.Parameter(torch.ones(dim))  # 初始化权重参数  # TODO 权重都是1？
+        self.weight = nn.Parameter(torch.ones(dim))  # 初始化权重参数，权重初始值为1
 
     def _norm(self, x):
         """ 计算 RMSNorm
-        :param: x: 输入张量
+        :param x: 输入张量，维度为(batch_size, seq_len, dim)
         :return: 归一化后的张量
         """
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)  # 计算 RMSNorm
+        # return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)  # 计算 RMSNorm
+
+        # 计算输入张量的平方的均值。
+        # 这里的mean -1 表示沿着最后一个维度（即最后一个轴）进行操作。
+        mean_square = x.pow(2).mean(-1, keepdim=True)
+        # 计算平方根均值的倒数
+        rsqrt_mean_square = torch.rsqrt(mean_square + self.eps)
+        # 归一化输入张量
+        normalized_x = x * rsqrt_mean_square
+        return normalized_x
 
     def forward(self, x):
         """ 前向传播
@@ -40,6 +50,8 @@ class RMSNorm(torch.nn.Module):
         :return: 归一化后的张量, 乘以权重参数
         """
         output = self._norm(x.float()).type_as(x)  # 应用 RMSNorm
+        # type_as: self._norm(x.float())计算结果是浮点数，需要转换成张量类型
+
         return output * self.weight  # 乘以权重参数
 
 
@@ -50,7 +62,7 @@ def precompute_pos_cis(dim: int, end: int, theta: float = 10000.0):
     :param: end: 位置编码的长度
     :param: theta: 预计算的参数
     :return: 位置编码的复数形式
-    """  # TODO 这个函数是做什么的？没看懂
+    """  # TODO 这个函数是做什么的？没看懂：
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))  # 计算频率
     t = torch.arange(end, device=freqs.device)  # 生成时间序列
     freqs = torch.outer(t, freqs).float()  # 计算外积
@@ -66,25 +78,32 @@ def apply_rotary_emb(xq, xk, pos_cis):
     :param: pos_cis: 位置编码的复数形式
     :return: 应用旋转位置编码后的查询和关键张量
     """
+
     def unite_shape(pos_cis, x):
         """ 将位置编码的形状与输入张量的形状统一
         :param pos_cis: 位置编码的复数形式
         :param x: 输入张量
         """
-        ndim = x.ndim
-        assert 0 <= 1 < ndim  # TODO 这里的assert需要慎用
-        assert pos_cis.shape == (x.shape[1], x.shape[-1])
+        ndim = x.ndim  # 获取输入张量的维度数
+        assert 0 <= 1 < ndim  # 确保输入张量至少有两维
+        assert pos_cis.shape == (x.shape[1], x.shape[-1])  # 确保位置编码的形状与输入张量的第二和最后一维匹配
+
+        # 构建一个新的形状，只有第二维和最后一维保留原尺寸，其他维度设为1
         shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
-        return pos_cis.view(*shape)
+        return pos_cis.view(*shape)  # 调整位置编码的形状
 
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))  # 将 xq 转换为复数形式
     xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))  # 将 xk 转换为复数形式
 
-    pos_cis = unite_shape(pos_cis, xq_)  # 调整 pos_cis 的形状
+    # 调整 pos_cis 的形状，使其与 xq_ 和 xk_ 的形状一致
+    pos_cis = unite_shape(pos_cis, xq_)
 
-    xq_out = torch.view_as_real(xq_ * pos_cis).flatten(3)  # 应用旋转位置编码
-    xk_out = torch.view_as_real(xk_ * pos_cis).flatten(3)  # 应用旋转位置编码
-    return xq_out.type_as(xq), xk_out.type_as(xk)  # 返回结果
+    # 应用旋转位置编码
+    xq_out = torch.view_as_real(xq_ * pos_cis).flatten(3)
+    xk_out = torch.view_as_real(xk_ * pos_cis).flatten(3)
+
+    # 返回结果，确保输出张量的类型与输入张量一致
+    return xq_out.type_as(xq), xk_out.type_as(xk)
 
 
 # 定义 repeat_kv 函数，用于重复 KV 头的值
@@ -101,40 +120,63 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     if n_rep == 1:
         return x
     return (
-        x[:, :, :, None, :]  # 在第3个维度上增加一个维度
+        x[:, :, :, None, :]
         .expand(bs, slen, n_kv_heads, n_rep, head_dim)
         .reshape(bs, slen, n_kv_heads * n_rep, head_dim)
     )
 
+
 # 定义 Attention 类，实现自注意力机制
 class Attention(nn.Module):
+    """
+    这里有几个优化技术
+       - kv cache: 用于存储和复用之前的键和值，减少重复计算，提高推理速度和节省内存。
+          - 减少重复计算：在生成式任务中，如文本生成，每次生成一个新词时，都需要重新计算所有之前的键（Key）和值（Value）。
+            通过使用 KV 缓存，可以存储之前已经计算好的键和值，从而避免重复计算，提高推理速度。
+          - 节省内存：在长序列的处理中，存储所有的键和值会占用大量内存。通过缓存，可以逐步释放不再需要的键和值，从而节省内存。
+       - flash attention
+          - 提高计算效率：优化的注意力计算方法，利用 GPU 的并行计算能力，显著减少注意力机制的计算时间和内存消耗。
+          - 减少内存占用：传统的注意力机制在计算注意力权重时需要存储大量的中间结果，
+            而 Flash Attention 通过优化算法减少了这些中间结果的存储需求。
+    """
+
     def __init__(self, args: LMConfig):
         super().__init__()
+
         self.n_kv_heads = args.n_heads if args.n_kv_heads is None else args.n_kv_heads  # 设置 KV 头的数量
         assert args.n_heads % self.n_kv_heads == 0  # 确保 KV 头的数量是总头数的因数
+
         self.n_local_heads = args.n_heads  # 设置本地头的数量
         self.n_local_kv_heads = self.n_kv_heads  # 设置本地 KV 头的数量
-        self.n_rep = self.n_local_heads // self.n_local_kv_heads  # 计算重复次数
+        self.n_rep = self.n_local_heads // self.n_local_kv_heads  # 计算重复次数： 用于减少模型的计算量
         self.head_dim = args.dim // args.n_heads  # 计算每个头的维度
+
         self.wq = nn.Linear(args.dim, args.n_heads * self.head_dim, bias=False)  # 初始化 Q 矩阵
         self.wk = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)  # 初始化 K 矩阵
         self.wv = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)  # 初始化 V 矩阵
         self.wo = nn.Linear(args.n_heads * self.head_dim, args.dim, bias=False)  # 初始化输出矩阵
+
         self.k_cache, self.v_cache = None, None  # 初始化 KV 缓存
         self.attn_dropout = nn.Dropout(args.dropout)  # 初始化注意力 dropout
         self.resid_dropout = nn.Dropout(args.dropout)  # 初始化残差 dropout
         self.dropout = args.dropout  # 设置 dropout 概率
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention') and args.flash_attn  # 判断是否使用 Flash Attention
+
+        # 判断是否使用 Flash Attention
+        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention') and args.flash_attn
 
         if not self.flash:
             # print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
             mask = torch.full((1, 1, args.max_seq_len, args.max_seq_len), float("-inf"))  # 初始化掩码
             mask = torch.triu(mask, diagonal=1)  # 生成上三角掩码
-            self.register_buffer("mask", mask)  # 注册掩码
+            self.register_buffer("mask", mask)  # 注册掩码  #
+            # 为什么要注册掩码：
+            # 因为需要使用到位置编码，而位置编码的形状与输入张量的第二和最后一维不一致，所以需要调整位置编码的形状。
 
     def forward(self, x: torch.Tensor, pos_cis: torch.Tensor, use_kv_cache=False):
-        bsz, seqlen, _ = x.shape
-        if use_kv_cache and self.eval():  # 如果使用 KV 缓存且在评估模式下
+        bsz, seqlen, _ = x.shape  # 获取输入张量的形状 (batch_size, sequence_length, hidden_dim)
+
+        # 如果使用 KV 缓存且在评估模式下
+        if use_kv_cache and self.eval():
             if self.k_cache is None or self.k_cache.shape[1] != x.shape[1] - 1:
                 xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)  # 计算 Q, K, V
             else:
@@ -147,36 +189,41 @@ class Attention(nn.Module):
         else:
             xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)  # 计算 Q, K, V
 
-        xq = xq.view(bsz, seqlen, self.n_local_heads, self.head_dim)  # 调整 Q 的形状
-        xk = xk.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)  # 调整 K 的形状
-        xv = xv.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)  # 调整 V 的形状
+        xq = xq.view(bsz, seqlen, self.n_local_heads, self.head_dim)  # 调整 Q 的形状 (batch_size, sequence_length, n_local_heads, head_dim)
+        xk = xk.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)  # 调整 K 的形状 (batch_size, sequence_length, n_local_kv_heads, head_dim)
+        xv = xv.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)  # 调整 V 的形状 (batch_size, sequence_length, n_local_kv_heads, head_dim)
 
         xq, xk = apply_rotary_emb(xq, xk, pos_cis)  # 应用旋转位置编码
 
         xk = repeat_kv(xk, self.n_rep)  # 重复 K 的值
         xv = repeat_kv(xv, self.n_rep)  # 重复 V 的值
 
-        xq = xq.transpose(1, 2)  # 调整 Q 的形状
-        xk = xk.transpose(1, 2)  # 调整 K 的形状
-        xv = xv.transpose(1, 2)  # 调整 V 的形状
+        xq = xq.transpose(1, 2)  # 调整 Q 的形状 (batch_size, n_local_heads, sequence_length, head_dim)
+        xk = xk.transpose(1, 2)  # 调整 K 的形状 (batch_size, n_local_heads, sequence_length, head_dim)
+        xv = xv.transpose(1, 2)  # 调整 V 的形状 (batch_size, n_local_heads, sequence_length, head_dim)
 
         if self.flash:
-            output = torch.nn.functional.scaled_dot_product_attention(xq, xk, xv, attn_mask=None,
-                                                                      dropout_p=self.dropout if self.training else 0.0,
-                                                                      is_causal=True)  # 使用 Flash Attention
+            output = torch.nn.functional.scaled_dot_product_attention(
+                xq, xk, xv,
+                attn_mask=None,
+                dropout_p=self.dropout if self.training else 0.0,
+                is_causal=True
+            )  # 使用 Flash Attention
         else:
-            scores = torch.matmul(xq, xk.transpose(2, 3)) / math.sqrt(self.head_dim)  # 计算注意力分数
+            scores = torch.matmul(xq, xk.transpose(2, 3)) / math.sqrt(self.head_dim)  # 计算注意力分数 (batch_size, n_local_heads, sequence_length, sequence_length)
             assert hasattr(self, 'mask')
             scores = scores + self.mask[:, :, :seqlen, :seqlen]  # 应用掩码
             scores = F.softmax(scores.float(), dim=-1).type_as(xq)  # 计算 softmax
             scores = self.attn_dropout(scores)  # 应用注意力 dropout
-            output = torch.matmul(scores, xv)  # 计算输出
+            output = torch.matmul(scores, xv)  # 计算输出 (batch_size, n_local_heads, sequence_length, head_dim)
 
-        output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)  # 调整输出的形状
+        output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)  # 调整输出的形状 (batch_size, sequence_length, hidden_dim)
 
         output = self.wo(output)  # 应用输出矩阵
         output = self.resid_dropout(output)  # 应用残差 dropout
         return output  # 返回输出
+
+
 
 # 定义 FeedForward 类，实现前馈神经网络
 class FeedForward(nn.Module):
@@ -193,6 +240,7 @@ class FeedForward(nn.Module):
 
     def forward(self, x):
         return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))  # 前向传播
+
 
 # 定义 MoEGate 类，实现专家混合（MoE）的门控机制
 class MoEGate(nn.Module):
@@ -251,6 +299,7 @@ class MoEGate(nn.Module):
         else:
             aux_loss = None
         return topk_idx, topk_weight, aux_loss  # 返回 top-k 专家索引、权重和辅助损失
+
 
 # 定义 MOEFeedForward 类，实现专家混合（MoE）的前馈神经网络
 class MOEFeedForward(nn.Module):
@@ -327,18 +376,20 @@ class MOEFeedForward(nn.Module):
 
         return expert_cache
 
+
 # 定义 TransformerBlock 类，实现 Transformer 的一个块，包括自注意力和前馈神经网络
 class TransformerBlock(nn.Module):
     def __init__(self, layer_id: int, args: LMConfig):
         super().__init__()
-        self.n_heads = args.n_heads
-        self.dim = args.dim
-        self.head_dim = args.dim // args.n_heads
+
+        self.n_heads = args.n_heads  # 注意力头的数量
+        self.dim = args.dim  # 模型维度
+        self.head_dim = args.dim // args.n_heads  # 每个头的维度
         self.attention = Attention(args)  # 初始化自注意力机制
 
-        self.layer_id = layer_id
-        self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)  # 初始化注意力归一化
-        self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)  # 初始化前馈神经网络归一化
+        self.layer_id = layer_id  # 层数的ID
+        self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)  # 初始化注意力归一化层
+        self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)  # 初始化前馈神经网络归一化层
 
         if args.use_moe:
             self.feed_forward = MOEFeedForward(args)  # 初始化专家混合前馈神经网络
@@ -346,14 +397,15 @@ class TransformerBlock(nn.Module):
             self.feed_forward = FeedForward(
                 dim=args.dim,
                 hidden_dim=args.hidden_dim,
-                multiple_of=args.multiple_of,
-                dropout=args.dropout,
+                multiple_of=args.multiple_of,  # 隐藏层维度的倍数
+                dropout=args.dropout,  # Dropout 概率, 作用: 防止过拟合
             )  # 初始化前馈神经网络
 
     def forward(self, x, pos_cis, use_kv_cache=False):
         h = x + self.attention(self.attention_norm(x), pos_cis, use_kv_cache)  # 计算自注意力
         out = h + self.feed_forward(self.ffn_norm(h))  # 计算前馈神经网络
         return out  # 返回输出
+
 
 # 定义 Transformer 类，实现整个 Transformer 模型
 class Transformer(PreTrainedModel):
@@ -362,17 +414,7 @@ class Transformer(PreTrainedModel):
 
     def __init__(self, params: LMConfig = None):
         super().__init__(params)
-        if not params:
-            params = LMConfig()
-        self.params = params
-        self.vocab_size = params.vocab_size
-        self.n_layers = params.n_layers
-class Transformer(PreTrainedModel):
-    config_class = LMConfig
-    last_loss: Optional[torch.Tensor]
 
-    def __init__(self, params: LMConfig = None):
-        super().__init__(params)
         if not params:
             params = LMConfig()
         self.params = params
@@ -384,6 +426,7 @@ class Transformer(PreTrainedModel):
         self.layers = torch.nn.ModuleList()  # 初始化 Transformer 块列表
         for layer_id in range(self.n_layers):
             self.layers.append(TransformerBlock(layer_id, params))  # 添加 Transformer 块
+
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)  # 初始化归一化层
         self.output = nn.Linear(params.dim, params.vocab_size, bias=False)  # 初始化输出层
         self.tok_embeddings.weight = self.output.weight  # 共享词嵌入和输出层的权重
@@ -400,6 +443,7 @@ class Transformer(PreTrainedModel):
         self.OUT = CausalLMOutputWithPast()  # 初始化输出对象
 
     def _init_weights(self, module):
+        # 初始化权重
         if isinstance(module, nn.Linear):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)  # 初始化线性层的权重
             if module.bias is not None:
@@ -425,7 +469,8 @@ class Transformer(PreTrainedModel):
 
         if targets is not None:
             logits = self.output(h)  # 计算 logits
-            self.last_loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)  # 计算交叉熵损失
+            self.last_loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1),
+                                             ignore_index=-1)  # 计算交叉熵损失
         else:
             logits = self.output(h[:, [-1], :])  # 计算最后一个 token 的 logits
             self.last_loss = None  # 没有目标时，损失为 None

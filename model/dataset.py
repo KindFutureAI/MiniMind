@@ -14,32 +14,60 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 class PretrainDataset(Dataset):
     def __init__(self, df, tokenizer, max_length=512):
+        """ 初始化PretrainDataset类
+        :param df: 数据框
+        :param tokenizer: 分词器
+        :param max_length: 最大序列长度
+        """
         super().__init__()
-        self.df = df
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-        self.padding = 0
+        self.df = df  # 数据
+        self.tokenizer = tokenizer  # 分词器
+        self.max_length = max_length  # 最大序列长度
+        self.padding = 0  # 填充 token ID
 
     def __len__(self):
         return self.df.shape[0]
 
     def __getitem__(self, index: int):
-        #
-        sample = self.df.iloc[index]
-        text = f"{self.tokenizer.bos_token}{str(sample['text'])}{self.tokenizer.eos_token}"
-        input_id = self.tokenizer(text).data['input_ids'][:self.max_length]
-        text_len = len(input_id)
-        # 没满最大长度的剩余部分
-        padding_len = self.max_length - text_len
-        input_id = input_id + [self.padding] * padding_len
-        # 0表示不计算损失
-        loss_mask = [1] * text_len + [0] * padding_len
+        """
+        根据给定的索引获取数据集中的一个样本，并对其进行预处理。
 
+        :param index: 样本在数据集中的索引位置
+        :return: 返回一个元组，包含输入序列X、目标序列Y和损失掩码loss_mask
+        """
+        sample = self.df.iloc[index]
+
+        # 将样本文本前后添加特殊标记（BOS开始标记和EOS结束标记）
+        text = f"{self.tokenizer.bos_token}{str(sample['text'])}{self.tokenizer.eos_token}"
+
+        # 使用分词器对文本进行编码，获取输入ID
+        input_id = self.tokenizer(text).data['input_ids'][:self.max_length]
+
+        # 计算实际文本长度
+        text_len = len(input_id)
+
+        # 计算需要填充的长度以达到最大长度
+        padding_len = self.max_length - text_len
+
+        # 对输入ID进行填充，使其长度等于最大长度
+        input_id = input_id + [self.padding] * padding_len
+
+        # 创建损失掩码，实际文本部分为1，表示计算损失；填充部分为0，表示不计算损失
+        loss_mask = [1] * text_len + [0] * padding_len
+        # TODO  这里有个很好的问题：为什么loss_mask不使用self.tokenizer(text).data['attention_mask'],
+        # 而是需要通过计算得到？  提示：通常这两个是相等的，但是在进行如序列标注任务时，会不相等。
+
+        # 将输入ID转换为NumPy数组，并拆分为输入序列X和目标序列Y
         input_id = np.array(input_id)
-        X = np.array(input_id[:-1]).astype(np.int64)
-        Y = np.array(input_id[1:]).astype(np.int64)
+        X = np.array(input_id[:-1]).astype(np.int64)  # 输入序列X为除去最后一个元素的序列
+        Y = np.array(input_id[1:]).astype(np.int64)   # 目标序列Y为除去第一个元素的序列
+
+        # 损失掩码同样去除第一个元素，与X和Y的长度保持一致
         loss_mask = np.array(loss_mask[1:]).astype(np.int64)
+
+        # 将NumPy数组转换为PyTorch张量并返回
         return torch.from_numpy(X), torch.from_numpy(Y), torch.from_numpy(loss_mask)
+
 
 
 class SFTDataset(Dataset):
@@ -58,6 +86,7 @@ class SFTDataset(Dataset):
         return self.df.shape[0]
 
     def find_sublist_index(self, main_list, sub_list) -> int:
+
         last_index = -1
         for i in range(len(main_list) - len(sub_list) + 1):
             if main_list[i:i + len(sub_list)] == sub_list:
